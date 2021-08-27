@@ -1,7 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+const http = require('http');
+const https = require('https');
 const ThumborMapping = require('./thumbor-mapping');
+const { URL } = require('url');
 
 class ImageRequest {
     constructor(s3, secretsManager) {
@@ -123,11 +126,27 @@ class ImageRequest {
     async getOriginalImage(bucket, key) {
         const imageLocation = { Bucket: bucket, Key: key };
         try {
-            const originalImage = await this.s3.getObject(imageLocation).promise();
-
+            const originalImage = await new Promise((resolve, reject) => {
+                this.s3.getObject(imageLocation).promise()
+                    .then(value => resolve(value))
+                    .catch(err => {
+                        try {
+                            this.getOriginalImageFromUrl(new URL(key))
+                                .then(value => resolve(value))
+                                .catch(e => {
+                                    // Ignore HTTP request error and just re-throw S3 error
+                                    reject(err);
+                                });
+                        } catch (e) {
+                            // Ignore URL parsing error and just re-throw S3 error
+                            reject(err);
+                        }
+                    });
+            })
+            
             if (originalImage.ContentType) {
                 //If using default s3 ContentType infer from hex headers
-                if(originalImage.ContentType === 'binary/octet-stream') {
+                if (originalImage.ContentType === 'binary/octet-stream') {
                     const imageBuffer = Buffer.from(originalImage.Body);
                     this.ContentType = this.inferImageType(imageBuffer);
                 } else {
@@ -158,6 +177,51 @@ class ImageRequest {
                 message: err.message
             };
         }
+    }
+
+    /**
+     * Gets the original image from a HTTP server.
+     * @param {URL} url - The URL to request the image.
+     * @returns {Promise} - The original image or an error.
+     */
+    async getOriginalImageFromUrl(url) {
+        return await new Promise((resolve, reject) => {
+            const originalImage = {};
+            const responseHandler = (response) => {
+                if (response.headers['content-type']) {
+                    originalImage.ContentType = response.headers['content-type'];
+                }
+                if (response.headers['expires']) {
+                    originalImage.Expires = response.headers['expires'];
+                }
+                if (response.headers['last-modified']) {
+                    originalImage.LastModified = response.headers['last-modified'];
+                }
+                if (response.headers['cache-control']) {
+                    originalImage.CacheControl = response.headers['cache-control'];
+                }
+                originalImage.Body = Buffer.alloc(0);
+                response.on('data', (chunk) => {
+                    originalImage.Body = Buffer.concat([originalImage.Body, chunk]);
+                });
+                response.on('end', () => {
+                    resolve(originalImage);
+                });
+            }
+            let request;
+            if (url.protocol === 'http:') {
+                request = http.request(url, responseHandler);
+            } else if (url.protocol === 'https:') {
+                request = https.request(url, responseHandler);
+            } else {
+                // Unsupported protocol
+                reject('Unsupported protocol');
+            }
+            request.on('error', (err) => {
+                reject(err);
+            });
+            request.end();
+        });
     }
 
     /**

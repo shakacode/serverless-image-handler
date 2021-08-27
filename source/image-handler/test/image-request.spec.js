@@ -16,6 +16,32 @@ jest.mock('aws-sdk', () => {
     };
 });
 
+const mockHttp = {
+    request: jest.fn()
+};
+/*
+jest.mock('http', () => {
+    return {
+        http: jest.fn(() => ({
+            request: mockHttps.request
+        }))
+    };
+});
+*/
+
+const mockHttps = {
+    request: jest.fn()
+};
+/*
+jest.mock('https', () => {
+    return {
+        https: jest.fn(() => ({
+            request: mockHttps.request
+        }))
+    };
+});
+*/
+
 const AWS = require('aws-sdk');
 const s3 = new AWS.S3();
 const secretsManager = new AWS.SecretsManager();
@@ -530,6 +556,64 @@ describe('setup()', function() {
             };
             // Assert
             expect(mockAws.getObject).toHaveBeenCalledWith({ Bucket: 'validBucket', Key: 'validKey' });
+            expect(imageRequest).toEqual(expectedResult);
+        });
+    });
+    describe('xxx/httpUrlAsKey', function() {
+        it('TODO: name this test properly', async function() {
+            // Arrange
+            const event = {
+                path : '/https://media.vrbo.com/lodging/19000000/18980000/18979100/18979020/2cbd833c.c10.jpg'
+            }
+            process.env = {
+                SOURCE_BUCKETS : "validBucket"
+            }
+            // Mock
+            mockAws.getObject.mockImplementationOnce(() => {
+                return {
+                    promise() {
+                        return Promise.reject({
+                            code: 'NoSuchKey',
+                            message: 'SimulatedException'
+                        });
+                    }
+                };
+            });
+            mockHttps.request.mockImplementationOnce((_url, callback) => {
+                return {
+                    on: jest.fn(),
+                    end: () => {
+                        const responseCallacks = {};
+                        const response = {
+                            headers: {},
+                            on: (event, callback) => responseCallacks[event] = callback
+                        };
+                        callback(response);
+                        if (responseCallacks['data']) {
+                            responseCallacks['data'](Buffer.from('SampleImageContent\n'));
+                        }
+
+                        if (responseCallacks['end']) {
+                            responseCallacks['end']();
+                        }
+                    },
+                };
+            });
+            // Act
+            const imageRequest = new ImageRequest(s3, secretsManager);
+            await imageRequest.setup(event);
+            const expectedResult = {
+                requestType: 'Thumbor',
+                bucket: 'validBucket',
+                key: 'https://media.vrbo.com/lodging/19000000/18980000/18979100/18979020/2cbd833c.c10.jpg',
+                edits: { grayscale: true },
+                outputFormat: 'jpeg',
+                originalImage: Buffer.from('SampleImageContent\n'),
+                CacheControl: 'max-age=31536000,public',
+                ContentType: 'image/jpeg'
+            };
+            // Assert
+            expect(mockAws.getObject).toHaveBeenCalledWith({ Bucket: 'validBucket', Key: 'https://media.vrbo.com/lodging/19000000/18980000/18979100/18979020/2cbd833c.c10.jpg' });
             expect(imageRequest).toEqual(expectedResult);
         });
     });
